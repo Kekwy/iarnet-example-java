@@ -18,10 +18,7 @@ public class Main {
                 .flatMap(line -> Arrays.asList(line.split(" ")),
                         2, Resource.of(1.5, "1Gi"))
                 .filter(w -> w.length() > 3)
-                .map(String::toLowerCase)
-                .map(Function.pythonMap(
-                        "function/iarnet.py", "process", String.class, "function/requirements.txt"
-                ));
+                .map(String::toLowerCase);
 
 //        Task checkpoint = wf.task("checkpoint", ctx -> {
 //            // save state
