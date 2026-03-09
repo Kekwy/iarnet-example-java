@@ -4,7 +4,6 @@ import com.kekwy.iarnet.sdk.Flow;
 import com.kekwy.iarnet.sdk.ExecutionConfig;
 import com.kekwy.iarnet.sdk.Workflow;
 import com.kekwy.iarnet.sdk.dsl.Inputs;
-import com.kekwy.iarnet.sdk.source.ConstantSource;
 
 /**
  * 智能交通视频分析流水线示例。
@@ -33,12 +32,12 @@ public class Main {
         /*
          * 阶段 1：双路摄像头数据源
          */
-        Flow<VideoFrame> cam1 = workflow.input(Inputs.of(
+        Flow<VideoFrame> cam1 = workflow.input("cam1-input", Inputs.of(
                 new VideoFrame("cam1", 1, "frame1_data"),
                 new VideoFrame("cam1", 2, "frame2_data"),
                 new VideoFrame("cam1", 3, "frame3_data")
         ));
-        Flow<VideoFrame> cam2 = workflow.input(Inputs.of(
+        Flow<VideoFrame> cam2 = workflow.input("cam2-input", Inputs.of(
                 new VideoFrame("cam2", 1, "frame1_data"),
                 new VideoFrame("cam2", 2, "frame2_data")
         ));
@@ -189,27 +188,39 @@ public class Main {
 
     // ======================== 数据类型 ========================
 
-    /** 原始视频帧（摄像头采集）。 */
+    /**
+     * 原始视频帧（摄像头采集）。
+     */
     private record VideoFrame(String cameraId, long sequenceId, String rawBytes) {
     }
 
-    /** 解码后的视频帧。 */
+    /**
+     * 解码后的视频帧。
+     */
     private record DecodedFrame(String cameraId, long sequenceId, String decodedData) {
     }
 
-    /** 目标检测结果（YOLO 等模型输出）。 */
+    /**
+     * 目标检测结果（YOLO 等模型输出）。
+     */
     private record DetectionResult(String cameraId, long sequenceId, String objectType, double confidence) {
     }
 
-    /** 行人重识别事件。 */
+    /**
+     * 行人重识别事件。
+     */
     private record PersonEvent(String cameraId, long timestamp, String identityId) {
     }
 
-    /** 车辆号牌识别事件。 */
+    /**
+     * 车辆号牌识别事件。
+     */
     private record VehicleEvent(String cameraId, long timestamp, String plateNumber) {
     }
 
-    /** 统一监控事件（归档/告警用）。 */
+    /**
+     * 统一监控事件（归档/告警用）。
+     */
     private record MonitorEvent(
             String cameraId,
             long timestamp,
