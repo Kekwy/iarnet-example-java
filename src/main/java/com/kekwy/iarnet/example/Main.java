@@ -1,369 +1,220 @@
 package com.kekwy.iarnet.example;
 
-import com.kekwy.iarnet.sdk.BranchedFlow;
 import com.kekwy.iarnet.sdk.Flow;
-import com.kekwy.iarnet.sdk.Resource;
+import com.kekwy.iarnet.sdk.ExecutionConfig;
 import com.kekwy.iarnet.sdk.Workflow;
-import com.kekwy.iarnet.sdk.sink.PrintSink;
 import com.kekwy.iarnet.sdk.source.ConstantSource;
 
-import java.time.Duration;
-import java.util.List;
-import java.util.Locale;
-
 /**
- * 面向 CTR 场景的训练样本构造与训练流程示例。
+ * 智能交通视频分析流水线示例。
  *
- * <p>该示例用于展示工作流 DSL 对典型智能应用阶段结构的表达能力，
- * 包括：行为日志输入、数据清洗、正负样本构造、用户/物品特征关联、
- * 训练样本生成、批处理、训练以及评估等阶段。</p>
+ * <p>本示例展示多摄像头实时交通监控的典型 DAG 工作流：在边缘端完成帧采样与运动过滤，
+ * 在云端执行 GPU 密集型目标检测与识别，最终汇合生成统一事件流并触发异常告警。
+ * 该设计体现 IARNet 面向云边协同场景的分布式数据流执行能力。</p>
  *
- * <p>为突出流程表达能力，示例中的训练与评估逻辑采用 mock 方式实现，
- * 不对应真实工业级 CTR 模型。</p>
+ * <h2>论文支撑</h2>
+ * <ul>
+ *   <li><b>VideoStorm</b> (Zhang et al., NSDI 2017): 将视频分析建模为 DAG 流水线，
+ *       研究资源-质量权衡与大规模调度，是视频分析系统架构的奠基性工作。</li>
+ *   <li><b>YOLO</b> (Redmon et al., CVPR 2016): 实时目标检测的开创性论文，
+ *       本示例检测阶段的算法基础。</li>
+ *   <li><b>Neurosurgeon</b> (Kang et al., ASPLOS 2017): DNN 推理在云端与边缘之间的协同分割，
+ *       为本示例中按资源声明划分边缘/云端计算提供理论依据。</li>
+ * </ul>
+ *
+ * <p>各阶段处理逻辑采用 mock 实现，用于突出工作流 DSL 的表达能力。</p>
  */
 public class Main {
 
     public static void main(String[] args) {
-        Workflow workflow = Workflow.create();
+        Workflow workflow = Workflow.create("video-analytics");
 
         /*
-         * 阶段 1：输入数据源
-         * - 用户行为日志
-         * - 用户画像
-         * - 物品画像
+         * 阶段 1：双路摄像头数据源
          */
-        Flow<BehaviorEvent> behaviorEvents = workflow.source(ConstantSource.of(
-                new BehaviorEvent("u1", "i1", 1_000L, "view", "app"),
-                new BehaviorEvent("u1", "i1", 1_200L, "click", "app"),
-                new BehaviorEvent("u2", "i2", 1_500L, "view", "web"),
-                new BehaviorEvent("u2", "i3", 1_800L, "click", "web"),
-                new BehaviorEvent("u3", "i2", 2_100L, "view", "app"),
-                new BehaviorEvent("u3", "i4", 2_300L, "view", "app")
+        Flow<VideoFrame> cam1 = workflow.source(ConstantSource.of(
+                new VideoFrame("cam1", 1, "frame1_data"),
+                new VideoFrame("cam1", 2, "frame2_data"),
+                new VideoFrame("cam1", 3, "frame3_data")
         ));
-
-        Flow<UserProfile> userProfiles = workflow.source(ConstantSource.of(
-                new UserProfile("u1", 24, "east", true),
-                new UserProfile("u2", 32, "west", false),
-                new UserProfile("u3", 28, "north", false)
-        ));
-
-        Flow<ItemProfile> itemProfiles = workflow.source(ConstantSource.of(
-                new ItemProfile("i1", "shoes", 199.0),
-                new ItemProfile("i2", "book", 39.0),
-                new ItemProfile("i3", "bag", 499.0),
-                new ItemProfile("i4", "watch", 1299.0)
+        Flow<VideoFrame> cam2 = workflow.source(ConstantSource.of(
+                new VideoFrame("cam2", 1, "frame1_data"),
+                new VideoFrame("cam2", 2, "frame2_data")
         ));
 
         /*
-         * 阶段 2：数据清洗与规范化
+         * 阶段 2：边缘端帧解码（轻量资源）
          */
-        Flow<BehaviorEvent> cleanedEvents = behaviorEvents
-                .filter(Main::isValidEvent)
-                .map(Main::normalizeEvent, 2, Resource.of(1.5, "1Gi"));
+        ExecutionConfig edgeLight = ExecutionConfig.of()
+                .replicas(1)
+                .resource(b -> b.cpu(0.5).memory("256Mi").gpu(0));
+
+        Flow<DecodedFrame> decoded1 = cam1.then("frame-decode-cam1", Main::decodeFrame, edgeLight);
+        Flow<DecodedFrame> decoded2 = cam2.then("frame-decode-cam2", Main::decodeFrame, edgeLight);
 
         /*
-         * 阶段 3：正负样本构造
-         * - click 事件直接作为正样本
-         * - view 事件经过简化负采样后作为负样本
+         * 阶段 3：多路摄像头汇合
          */
-        BranchedFlow<BehaviorEvent> labeledBranches =
-                cleanedEvents.branch(event -> "click".equals(event.eventType()) ? 0 : 1);
-
-        Flow<LabeledEvent> positiveSamples = labeledBranches.getFlow(0)
-                .map(event -> new LabeledEvent(event.userId(), event.itemId(), event.ts(), 1));
-
-        Flow<LabeledEvent> negativeSamples = labeledBranches.getFlow(1)
-                .filter(Main::selectAsNegativeSample)
-                .map(event -> new LabeledEvent(event.userId(), event.itemId(), event.ts(), 0));
-
-        Flow<LabeledEvent> labeledSamples = positiveSamples.union(negativeSamples);
+        Flow<DecodedFrame> mergedFrames = decoded1.union(
+                "merge-cameras",
+                decoded2,
+                (a, b) -> a.or(() -> b)
+                        .orElseThrow(() -> new IllegalStateException("union requires at least one input"))
+        );
 
         /*
-         * 可选观察节点：统计每个用户参与构造的训练样本数量
+         * 阶段 4：运动过滤（仅保留有运动的帧，边缘侧）
          */
-        labeledSamples.keyBy(LabeledEvent::userId)
-                .fold(0, (count, ignored) -> count + 1)
-                .map(count -> "sample_count_per_user=" + count)
-                .sink(PrintSink.of());
+        Flow<DecodedFrame> motionFrames = mergedFrames
+                .when(Main::hasMotion)
+                .then("motion-filter", f -> f, edgeLight);
 
         /*
-         * 阶段 4：用户侧特征关联
+         * 阶段 5：目标检测（云端 GPU 密集型）
          */
-        Flow<UserEnrichedSample> userEnrichedSamples = labeledSamples
-                .keyBy(LabeledEvent::userId)
-                .join(
-                        userProfiles.keyBy(UserProfile::userId),
-                        Duration.ofSeconds(10),
-                        (sample, user) -> new UserEnrichedSample(
-                                sample.userId(),
-                                sample.itemId(),
-                                sample.ts(),
-                                sample.label(),
-                                user.age(),
-                                user.region(),
-                                user.vip()
-                        )
-                );
+        ExecutionConfig cloudGpu = ExecutionConfig.of()
+                .replicas(2)
+                .resource(b -> b.cpu(2).memory("4Gi").gpu(1));
+
+        Flow<DetectionResult> detections = motionFrames.then(
+                "object-detect",
+                Main::detectObjects,
+                cloudGpu
+        );
 
         /*
-         * 阶段 5：物品侧特征关联
+         * 阶段 6：条件分流 - 行人重识别 vs 车辆号牌识别
          */
-        Flow<ItemEnrichedSample> fullyEnrichedSamples = userEnrichedSamples
-                .keyBy(UserEnrichedSample::itemId)
-                .join(
-                        itemProfiles.keyBy(ItemProfile::itemId),
-                        Duration.ofSeconds(10),
-                        (sample, item) -> new ItemEnrichedSample(
-                                sample.userId(),
-                                sample.itemId(),
-                                sample.ts(),
-                                sample.label(),
-                                sample.age(),
-                                sample.region(),
-                                sample.vip(),
-                                item.category(),
-                                item.price()
-                        )
-                );
+        ExecutionConfig cloudReid = ExecutionConfig.of()
+                .replicas(1)
+                .resource(b -> b.cpu(2).memory("2Gi").gpu(1));
+        ExecutionConfig edgePlate = ExecutionConfig.of()
+                .replicas(1)
+                .resource(b -> b.cpu(1).memory("1Gi").gpu(0));
+
+        Flow<PersonEvent> personEvents = detections
+                .when(dr -> "person".equals(dr.objectType()))
+                .then("person-reid", Main::reidentifyPerson, cloudReid)
+                .then("person-to-event", Main::personToEvent);
+
+        Flow<VehicleEvent> vehicleEvents = detections
+                .when(dr -> "vehicle".equals(dr.objectType()))
+                .then("plate-recognize", Main::recognizePlate, edgePlate)
+                .then("vehicle-to-event", Main::vehicleToEvent);
 
         /*
-         * 阶段 6：训练样本生成
+         * 阶段 7：行人/车辆事件汇合为统一监控事件
          */
-        Flow<TrainingSample> trainingSamples = fullyEnrichedSamples
-                .map(Main::buildTrainingSample);
+        Flow<MonitorEvent> allEvents = personEvents.union(
+                "merge-events",
+                vehicleEvents,
+                (p, v) -> p.map(Main::personToMonitorEvent)
+                        .or(() -> v.map(Main::vehicleToMonitorEvent))
+                        .orElseThrow(() -> new IllegalStateException("union requires at least one input"))
+        );
 
         /*
-         * 阶段 7：批处理
-         * 使用 fold 算子实现每 3 个样本聚合为一个批次
+         * 阶段 8：归档所有事件，异常时触发告警
          */
-        Flow<List<TrainingSample>> trainingBatches = trainingSamples
-                .keyBy(sample -> 0) // 分区到单一节点
-                .fold(new BatchAccumulator(), Duration.ofHours(1), (acc, sample) -> {
-                    acc.buffer.add(sample);
-                    if (acc.buffer.size() >= 3) {
-                        acc.readyBatch = new java.util.ArrayList<>(acc.buffer);
-                        acc.buffer.clear();
-                    } else {
-                        acc.readyBatch = null;
-                    }
-                    return acc;
-                })
-                .map(acc -> acc.readyBatch)
-                .filter(batch -> batch != null);
-
-        /*
-         * 阶段 8：模型训练（mock）
-         */
-        Flow<MockTrainingResult> trainingResults = trainingBatches
-                .map(Main::mockTrainBatch);
-
-        /*
-         * 阶段 9：模型评估（mock）
-         */
-        trainingResults
-                .map(Main::mockEvaluate)
-                .sink(PrintSink.of());
+        allEvents.then("archive-and-alert", event -> {
+            archiveEvent(event);
+            if (isAnomaly(event)) {
+                sendAlert(generateAlert(event));
+            }
+        });
 
         workflow.execute();
     }
 
-    /**
-     * 判断行为日志是否有效。
-     */
-    private static boolean isValidEvent(BehaviorEvent event) {
-        return event.userId() != null
-                && !event.userId().isBlank()
-                && event.itemId() != null
-                && !event.itemId().isBlank();
+    // ======================== Mock 函数 ========================
+
+    private static DecodedFrame decodeFrame(VideoFrame raw) {
+        return new DecodedFrame(raw.cameraId(), raw.sequenceId(), raw.rawBytes() + "_decoded");
     }
 
-    /**
-     * 对原始行为日志进行规范化处理。
-     */
-    private static BehaviorEvent normalizeEvent(BehaviorEvent event) {
-        String normalizedType = event.eventType() == null
-                ? "view"
-                : event.eventType().trim().toLowerCase(Locale.ROOT);
+    private static boolean hasMotion(DecodedFrame frame) {
+        return frame.sequenceId() % 2 == 1;
+    }
 
-        String normalizedPlatform = event.platform() == null
-                ? "unknown"
-                : event.platform().trim().toLowerCase(Locale.ROOT);
-
-        return new BehaviorEvent(
-                event.userId(),
-                event.itemId(),
-                event.ts(),
-                normalizedType,
-                normalizedPlatform
+    private static DetectionResult detectObjects(DecodedFrame frame) {
+        return new DetectionResult(
+                frame.cameraId(),
+                frame.sequenceId(),
+                frame.sequenceId() % 2 == 0 ? "person" : "vehicle",
+                0.95
         );
     }
 
-    /**
-     * 简化的负样本筛选逻辑。
-     *
-     * <p>真实 CTR 场景中负样本通常来自曝光未点击事件或经专门负采样策略构造。
-     * 本示例仅为突出工作流结构，采用确定性规则进行 mock。</p>
-     */
-    private static boolean selectAsNegativeSample(BehaviorEvent event) {
-        return Math.abs(event.itemId().hashCode()) % 2 == 0;
+    private static PersonEvent reidentifyPerson(DetectionResult dr) {
+        return new PersonEvent(dr.cameraId(), dr.sequenceId(), "pid_" + dr.sequenceId());
     }
 
-    /**
-     * 将富化后的样本转换为训练样本。
-     */
-    private static TrainingSample buildTrainingSample(ItemEnrichedSample sample) {
-        String featureVector =
-                "age=" + sample.age()
-                        + ",region=" + sample.region()
-                        + ",vip=" + sample.vip()
-                        + ",category=" + sample.category()
-                        + ",price=" + sample.price();
-
-        return new TrainingSample(
-                sample.userId(),
-                sample.itemId(),
-                sample.label(),
-                featureVector
-        );
+    private static PersonEvent personToEvent(PersonEvent pe) {
+        return pe;
     }
 
-    /**
-     * mock 训练步骤：将一个 batch 转换为训练结果摘要。
-     */
-    private static MockTrainingResult mockTrainBatch(List<TrainingSample> batch) {
-        int positiveCount = 0;
-        for (TrainingSample sample : batch) {
-            if (sample.label() == 1) {
-                positiveCount++;
-            }
-        }
-
-        double mockLoss = 1.0 / (batch.size() + positiveCount + 1.0);
-
-        return new MockTrainingResult(
-                batch.size(),
-                positiveCount,
-                mockLoss,
-                batch.get(0)
-        );
+    private static VehicleEvent recognizePlate(DetectionResult dr) {
+        return new VehicleEvent(dr.cameraId(), dr.sequenceId(), "京A" + dr.sequenceId());
     }
 
-    /**
-     * mock 评估步骤：基于训练结果生成可观察指标。
-     */
-    private static String mockEvaluate(MockTrainingResult result) {
-        double mockAuc = Math.min(0.95, 0.60 + result.positiveCount() * 0.05);
-
-        return "MockMetric{"
-                + "batchSize=" + result.batchSize()
-                + ", positiveCount=" + result.positiveCount()
-                + ", loss=" + String.format(Locale.ROOT, "%.4f", result.loss())
-                + ", auc=" + String.format(Locale.ROOT, "%.4f", mockAuc)
-                + ", firstSample=" + result.firstSample()
-                + "}";
+    private static VehicleEvent vehicleToEvent(VehicleEvent ve) {
+        return ve;
     }
 
-    /**
-     * 用户行为日志。
-     */
-    private record BehaviorEvent(
-            String userId,
-            String itemId,
-            long ts,
-            String eventType,
-            String platform
+    private static MonitorEvent personToMonitorEvent(PersonEvent p) {
+        return new MonitorEvent(p.cameraId(), p.timestamp(), "person", p.identityId(), null);
+    }
+
+    private static MonitorEvent vehicleToMonitorEvent(VehicleEvent v) {
+        return new MonitorEvent(v.cameraId(), v.timestamp(), "vehicle", null, v.plateNumber());
+    }
+
+    private static void archiveEvent(MonitorEvent event) {
+        System.out.println("[ARCHIVE] " + event);
+    }
+
+    private static boolean isAnomaly(MonitorEvent event) {
+        return "vehicle".equals(event.objectType()) && event.plateNumber() != null
+                && event.plateNumber().contains("3");
+    }
+
+    private static String generateAlert(MonitorEvent event) {
+        return "ALERT: anomaly detected - " + event;
+    }
+
+    private static void sendAlert(String alert) {
+        System.out.println(alert);
+    }
+
+    // ======================== 数据类型 ========================
+
+    /** 原始视频帧（摄像头采集）。 */
+    private record VideoFrame(String cameraId, long sequenceId, String rawBytes) {
+    }
+
+    /** 解码后的视频帧。 */
+    private record DecodedFrame(String cameraId, long sequenceId, String decodedData) {
+    }
+
+    /** 目标检测结果（YOLO 等模型输出）。 */
+    private record DetectionResult(String cameraId, long sequenceId, String objectType, double confidence) {
+    }
+
+    /** 行人重识别事件。 */
+    private record PersonEvent(String cameraId, long timestamp, String identityId) {
+    }
+
+    /** 车辆号牌识别事件。 */
+    private record VehicleEvent(String cameraId, long timestamp, String plateNumber) {
+    }
+
+    /** 统一监控事件（归档/告警用）。 */
+    private record MonitorEvent(
+            String cameraId,
+            long timestamp,
+            String objectType,
+            String identityId,
+            String plateNumber
     ) {
-    }
-
-    /**
-     * 用户画像。
-     */
-    private record UserProfile(
-            String userId,
-            int age,
-            String region,
-            boolean vip
-    ) {
-    }
-
-    /**
-     * 物品画像。
-     */
-    private record ItemProfile(
-            String itemId,
-            String category,
-            double price
-    ) {
-    }
-
-    /**
-     * 带标签的样本。
-     */
-    private record LabeledEvent(
-            String userId,
-            String itemId,
-            long ts,
-            int label
-    ) {
-    }
-
-    /**
-     * 关联用户画像后的样本。
-     */
-    private record UserEnrichedSample(
-            String userId,
-            String itemId,
-            long ts,
-            int label,
-            int age,
-            String region,
-            boolean vip
-    ) {
-    }
-
-    /**
-     * 同时关联用户画像与物品画像后的样本。
-     */
-    private record ItemEnrichedSample(
-            String userId,
-            String itemId,
-            long ts,
-            int label,
-            int age,
-            String region,
-            boolean vip,
-            String category,
-            double price
-    ) {
-    }
-
-    /**
-     * 训练样本。
-     */
-    private record TrainingSample(
-            String userId,
-            String itemId,
-            int label,
-            String featureVector
-    ) {
-    }
-
-    /**
-     * mock 训练结果摘要。
-     */
-    private record MockTrainingResult(
-            int batchSize,
-            int positiveCount,
-            double loss,
-            TrainingSample firstSample
-    ) {
-    }
-
-    /**
-     * 批处理累加器。
-     */
-    public static class BatchAccumulator {
-        public List<TrainingSample> buffer = new java.util.ArrayList<>();
-        public List<TrainingSample> readyBatch = null;
     }
 }
