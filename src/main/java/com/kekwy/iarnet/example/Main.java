@@ -3,6 +3,7 @@ package com.kekwy.iarnet.example;
 import com.kekwy.iarnet.sdk.Flow;
 import com.kekwy.iarnet.sdk.ExecutionConfig;
 import com.kekwy.iarnet.sdk.Workflow;
+import com.kekwy.iarnet.sdk.dsl.Inputs;
 import com.kekwy.iarnet.sdk.source.ConstantSource;
 
 /**
@@ -32,12 +33,12 @@ public class Main {
         /*
          * 阶段 1：双路摄像头数据源
          */
-        Flow<VideoFrame> cam1 = workflow.source(ConstantSource.of(
+        Flow<VideoFrame> cam1 = workflow.input(Inputs.of(
                 new VideoFrame("cam1", 1, "frame1_data"),
                 new VideoFrame("cam1", 2, "frame2_data"),
                 new VideoFrame("cam1", 3, "frame3_data")
         ));
-        Flow<VideoFrame> cam2 = workflow.source(ConstantSource.of(
+        Flow<VideoFrame> cam2 = workflow.input(Inputs.of(
                 new VideoFrame("cam2", 1, "frame1_data"),
                 new VideoFrame("cam2", 2, "frame2_data")
         ));
