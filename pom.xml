@@ -61,7 +61,7 @@
     <dependencies>
         <dependency>
             <groupId>com.kekwy.iarnet</groupId>
-            <artifactId>iarnet-api-java</artifactId>
+            <artifactId>iarnet-sdk-java</artifactId>
             <version>1.0.0-SNAPSHOT</version>
         </dependency>
     </dependencies>
