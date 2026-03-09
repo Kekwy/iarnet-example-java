@@ -4,7 +4,6 @@ import com.kekwy.iarnet.sdk.BranchedFlow;
 import com.kekwy.iarnet.sdk.Flow;
 import com.kekwy.iarnet.sdk.Resource;
 import com.kekwy.iarnet.sdk.Workflow;
-import com.kekwy.iarnet.sdk.Windows;
 import com.kekwy.iarnet.sdk.sink.PrintSink;
 import com.kekwy.iarnet.sdk.source.ConstantSource;
 
@@ -94,7 +93,7 @@ public class Main {
                 .keyBy(LabeledEvent::userId)
                 .join(
                         userProfiles.keyBy(UserProfile::userId),
-                        Windows.join(Duration.ofSeconds(-10), Duration.ofSeconds(10)),
+                        Duration.ofSeconds(10),
                         (sample, user) -> new UserEnrichedSample(
                                 sample.userId(),
                                 sample.itemId(),
@@ -113,7 +112,7 @@ public class Main {
                 .keyBy(UserEnrichedSample::itemId)
                 .join(
                         itemProfiles.keyBy(ItemProfile::itemId),
-                        Windows.join(Duration.ofSeconds(-10), Duration.ofSeconds(10)),
+                        Duration.ofSeconds(10),
                         (sample, item) -> new ItemEnrichedSample(
                                 sample.userId(),
                                 sample.itemId(),
@@ -135,8 +134,22 @@ public class Main {
 
         /*
          * 阶段 7：批处理
+         * 使用 fold 算子实现每 3 个样本聚合为一个批次
          */
-        Flow<List<TrainingSample>> trainingBatches = trainingSamples.batch(3);
+        Flow<List<TrainingSample>> trainingBatches = trainingSamples
+                .keyBy(sample -> 0) // 分区到单一节点
+                .fold(new BatchAccumulator(), Duration.ofHours(1), (acc, sample) -> {
+                    acc.buffer.add(sample);
+                    if (acc.buffer.size() >= 3) {
+                        acc.readyBatch = new java.util.ArrayList<>(acc.buffer);
+                        acc.buffer.clear();
+                    } else {
+                        acc.readyBatch = null;
+                    }
+                    return acc;
+                })
+                .map(acc -> acc.readyBatch)
+                .filter(batch -> batch != null);
 
         /*
          * 阶段 8：模型训练（mock）
@@ -344,5 +357,13 @@ public class Main {
             double loss,
             TrainingSample firstSample
     ) {
+    }
+
+    /**
+     * 批处理累加器。
+     */
+    public static class BatchAccumulator {
+        public List<TrainingSample> buffer = new java.util.ArrayList<>();
+        public List<TrainingSample> readyBatch = null;
     }
 }
