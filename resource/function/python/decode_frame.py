@@ -14,3 +14,4 @@ def decode_frame(input_obj: dict) -> dict:
         "sequenceId": input_obj["sequenceId"],
         "decodedData": input_obj["rawBytes"] + "_decoded",
     }
+
