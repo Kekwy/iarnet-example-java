@@ -4,6 +4,7 @@ import com.kekwy.iarnet.sdk.Flow;
 import com.kekwy.iarnet.sdk.ExecutionConfig;
 import com.kekwy.iarnet.sdk.Workflow;
 import com.kekwy.iarnet.sdk.dsl.Inputs;
+import com.kekwy.iarnet.sdk.dsl.Tasks;
 
 /**
  * 智能交通视频分析流水线示例。
@@ -51,6 +52,18 @@ public class Main {
 
         Flow<DecodedFrame> decoded1 = cam1.then("frame-decode-cam1", Main::decodeFrame, edgeLight);
         Flow<DecodedFrame> decoded2 = cam2.then("frame-decode-cam2", Main::decodeFrame, edgeLight);
+
+        // TODO: 未实现
+        // Flow<DecodedFrame> decoded1 = cam1.then(
+        //         "frame-decode-cam1",
+        //         Tasks.<VideoFrame, DecodedFrame>pythonTask("decode_frame"),
+        //         edgeLight
+        // );
+        // Flow<DecodedFrame> decoded2 = cam2.then(
+        //         "frame-decode-cam2",
+        //         Tasks.<VideoFrame, DecodedFrame>pythonTask("decode_frame"),
+        //         edgeLight
+        // );
 
         /*
          * 阶段 3：多路摄像头汇合
