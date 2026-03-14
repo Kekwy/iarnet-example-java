@@ -1,10 +1,9 @@
 package com.kekwy.iarnet.example;
 
-import com.kekwy.iarnet.sdk.Flow;
 import com.kekwy.iarnet.sdk.ExecutionConfig;
+import com.kekwy.iarnet.sdk.Flow;
 import com.kekwy.iarnet.sdk.Workflow;
-import com.kekwy.iarnet.sdk.dsl.Inputs;
-import com.kekwy.iarnet.sdk.dsl.Tasks;
+import com.kekwy.iarnet.sdk.type.TypeToken;
 
 /**
  * 智能交通视频分析流水线示例。
@@ -23,7 +22,8 @@ import com.kekwy.iarnet.sdk.dsl.Tasks;
  *       为本示例中按资源声明划分边缘/云端计算提供理论依据。</li>
  * </ul>
  *
- * <p>各阶段处理逻辑采用 mock 实现，用于突出工作流 DSL 的表达能力。</p>
+ * <p>各阶段处理逻辑采用 mock 实现，用于突出工作流 DSL 的表达能力。
+ * 工作流输入（双路摄像头）在提交时由用户提供，不引入 Python 函数。</p>
  */
 public class Main {
 
@@ -31,103 +31,69 @@ public class Main {
         Workflow workflow = Workflow.create("video-analytics");
 
         /*
-         * 阶段 1：双路摄像头数据源
+         * 阶段 1：双路摄像头数据源（输入在 execute 时提供）
          */
-        Flow<VideoFrame> cam1 = workflow.input("cam1-input", Inputs.of(
-                new VideoFrame("cam1", 1, "frame1_data"),
-                new VideoFrame("cam1", 2, "frame2_data"),
-                new VideoFrame("cam1", 3, "frame3_data")
-        ));
-        Flow<VideoFrame> cam2 = workflow.input("cam2-input", Inputs.of(
-                new VideoFrame("cam2", 1, "frame1_data"),
-                new VideoFrame("cam2", 2, "frame2_data")
-        ));
+        Flow<DecodedFrame> decoded1 = workflow
+                .input("cam1-input", new TypeToken<VideoFrame>() {})
+                .then("frame-decode-cam1", Main::decodeFrame, edgeLight());
+        Flow<DecodedFrame> decoded2 = workflow
+                .input("cam2-input", new TypeToken<VideoFrame>() {})
+                .then("frame-decode-cam2", Main::decodeFrame, edgeLight());
 
         /*
-         * 阶段 2：边缘端帧解码（轻量资源）
+         * 阶段 2：多路摄像头汇合，产出包含两路上游结果的新类型
          */
-        ExecutionConfig edgeLight = ExecutionConfig.of()
-                .replicas(1)
-                .resource(b -> b.cpu(0.5).memory("256Mi").gpu(0));
-
-        Flow<DecodedFrame> decoded1 = cam1.then("frame-decode-cam1", Main::decodeFrame, edgeLight);
-        Flow<DecodedFrame> decoded2 = cam2.then("frame-decode-cam2", Main::decodeFrame, edgeLight);
-
-        // TODO: 未实现
-        // Flow<DecodedFrame> decoded1 = cam1.then(
-        //         "frame-decode-cam1",
-        //         Tasks.<VideoFrame, DecodedFrame>pythonTask("decode_frame"),
-        //         edgeLight
-        // );
-        // Flow<DecodedFrame> decoded2 = cam2.then(
-        //         "frame-decode-cam2",
-        //         Tasks.<VideoFrame, DecodedFrame>pythonTask("decode_frame"),
-        //         edgeLight
-        // );
-
-        /*
-         * 阶段 3：多路摄像头汇合
-         */
-        Flow<DecodedFrame> mergedFrames = decoded1.combine(
+        Flow<MergedFrames> mergedFrames = decoded1.combine(
                 "merge-cameras",
                 decoded2,
-                (a, b) -> a.or(() -> b)
-                        .orElseThrow(() -> new IllegalStateException("combine requires at least one input"))
+                (a, b) -> new MergedFrames(a.orElse(null), b.orElse(null))
         );
 
         /*
-         * 阶段 4：运动过滤（仅保留有运动的帧，边缘侧）
+         * 阶段 3：运动过滤（仅保留有运动的帧，边缘侧）
          */
-        Flow<DecodedFrame> motionFrames = mergedFrames
-                .when(Main::hasMotion)
-                .then("motion-filter", f -> f, edgeLight);
+        Flow<MergedFrames> motionFrames = mergedFrames
+                .when(Main::mergedHasMotion)
+                .then("motion-filter", f -> f, edgeLight());
 
         /*
-         * 阶段 5：目标检测（云端 GPU 密集型）
+         * 阶段 4：目标检测（云端 GPU 密集型）
          */
-        ExecutionConfig cloudGpu = ExecutionConfig.of()
-                .replicas(2)
-                .resource(b -> b.cpu(2).memory("4Gi").gpu(1));
-
         Flow<DetectionResult> detections = motionFrames.then(
                 "object-detect",
-                Main::detectObjects,
-                cloudGpu
+                Main::detectObjectsFromMerged,
+                cloudGpu()
         );
 
         /*
-         * 阶段 6：条件分流 - 行人重识别 vs 车辆号牌识别
+         * 阶段 5：条件分流 - 行人重识别 vs 车辆号牌识别
          */
-        ExecutionConfig cloudReid = ExecutionConfig.of()
-                .replicas(1)
-                .resource(b -> b.cpu(2).memory("2Gi").gpu(1));
-        ExecutionConfig edgePlate = ExecutionConfig.of()
-                .replicas(1)
-                .resource(b -> b.cpu(1).memory("1Gi").gpu(0));
-
         Flow<PersonEvent> personEvents = detections
                 .when(dr -> "person".equals(dr.objectType()))
-                .then("person-reid", Main::reidentifyPerson, cloudReid)
+                .then("person-reid", Main::reidentifyPerson, cloudReid())
                 .then("person-to-event", Main::personToEvent);
 
         Flow<VehicleEvent> vehicleEvents = detections
                 .when(dr -> "vehicle".equals(dr.objectType()))
-                .then("plate-recognize", Main::recognizePlate, edgePlate)
+                .then("plate-recognize", Main::recognizePlate, edgePlate())
                 .then("vehicle-to-event", Main::vehicleToEvent);
 
         /*
-         * 阶段 7：行人/车辆事件汇合为统一监控事件
+         * 阶段 6：行人/车辆事件汇合为包含两路上游结果的新类型，再转为统一监控事件
          */
-        Flow<MonitorEvent> allEvents = personEvents.combine(
+        Flow<MergedEvents> combinedEvents = personEvents.combine(
                 "merge-events",
                 vehicleEvents,
-                (p, v) -> p.map(Main::personToMonitorEvent)
-                        .or(() -> v.map(Main::vehicleToMonitorEvent))
-                        .orElseThrow(() -> new IllegalStateException("combine requires at least one input"))
+                (p, v) -> new MergedEvents(p.orElse(null), v.orElse(null))
+        );
+
+        Flow<MonitorEvent> allEvents = combinedEvents.then(
+                "to-monitor-event",
+                Main::mergedToMonitorEvent
         );
 
         /*
-         * 阶段 8：归档所有事件，异常时触发告警
+         * 阶段 7：归档所有事件，异常时触发告警
          */
         allEvents.then("archive-and-alert", event -> {
             archiveEvent(event);
@@ -139,17 +105,46 @@ public class Main {
         workflow.execute();
     }
 
+    private static ExecutionConfig edgeLight() {
+        return ExecutionConfig.of()
+                .replicas(1)
+                .resource(b -> b.cpu(0.5).memory("256Mi").gpu(0));
+    }
+
+    private static ExecutionConfig cloudGpu() {
+        return ExecutionConfig.of()
+                .replicas(2)
+                .resource(b -> b.cpu(2).memory("4Gi").gpu(1));
+    }
+
+    private static ExecutionConfig cloudReid() {
+        return ExecutionConfig.of()
+                .replicas(1)
+                .resource(b -> b.cpu(2).memory("2Gi").gpu(1));
+    }
+
+    private static ExecutionConfig edgePlate() {
+        return ExecutionConfig.of()
+                .replicas(1)
+                .resource(b -> b.cpu(1).memory("1Gi").gpu(0));
+    }
+
     // ======================== Mock 函数 ========================
 
     private static DecodedFrame decodeFrame(VideoFrame raw) {
         return new DecodedFrame(raw.cameraId(), raw.sequenceId(), raw.rawBytes() + "_decoded");
     }
 
-    private static boolean hasMotion(DecodedFrame frame) {
-        return frame.sequenceId() % 2 == 1;
+    private static boolean mergedHasMotion(MergedFrames m) {
+        return (m.fromCam1() != null && m.fromCam1().sequenceId() % 2 == 1)
+                || (m.fromCam2() != null && m.fromCam2().sequenceId() % 2 == 1);
     }
 
-    private static DetectionResult detectObjects(DecodedFrame frame) {
+    private static DetectionResult detectObjectsFromMerged(MergedFrames m) {
+        DecodedFrame frame = m.fromCam1() != null ? m.fromCam1() : m.fromCam2();
+        if (frame == null) {
+            throw new IllegalStateException("MergedFrames 至少应包含一路");
+        }
         return new DetectionResult(
                 frame.cameraId(),
                 frame.sequenceId(),
@@ -174,12 +169,20 @@ public class Main {
         return ve;
     }
 
-    private static MonitorEvent personToMonitorEvent(PersonEvent p) {
-        return new MonitorEvent(p.cameraId(), p.timestamp(), "person", p.identityId(), null);
-    }
-
-    private static MonitorEvent vehicleToMonitorEvent(VehicleEvent v) {
-        return new MonitorEvent(v.cameraId(), v.timestamp(), "vehicle", null, v.plateNumber());
+    private static MonitorEvent mergedToMonitorEvent(MergedEvents e) {
+        if (e.person() != null) {
+            return new MonitorEvent(
+                    e.person().cameraId(), e.person().timestamp(),
+                    "person", e.person().identityId(), null
+            );
+        }
+        if (e.vehicle() != null) {
+            return new MonitorEvent(
+                    e.vehicle().cameraId(), e.vehicle().timestamp(),
+                    "vehicle", null, e.vehicle().plateNumber()
+            );
+        }
+        throw new IllegalStateException("MergedEvents 至少应包含一路");
     }
 
     private static void archiveEvent(MonitorEvent event) {
@@ -214,6 +217,12 @@ public class Main {
     }
 
     /**
+     * 合并两路解码帧的结果（combine 阶段产出，包含两个上游任务结果）。
+     */
+    private record MergedFrames(DecodedFrame fromCam1, DecodedFrame fromCam2) {
+    }
+
+    /**
      * 目标检测结果（YOLO 等模型输出）。
      */
     private record DetectionResult(String cameraId, long sequenceId, String objectType, double confidence) {
@@ -229,6 +238,12 @@ public class Main {
      * 车辆号牌识别事件。
      */
     private record VehicleEvent(String cameraId, long timestamp, String plateNumber) {
+    }
+
+    /**
+     * 合并行人/车辆事件的结果（combine 阶段产出，包含两个上游任务结果）。
+     */
+    private record MergedEvents(PersonEvent person, VehicleEvent vehicle) {
     }
 
     /**
