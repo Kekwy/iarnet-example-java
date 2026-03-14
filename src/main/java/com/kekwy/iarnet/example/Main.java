@@ -68,11 +68,11 @@ public class Main {
         /*
          * 阶段 3：多路摄像头汇合
          */
-        Flow<DecodedFrame> mergedFrames = decoded1.union(
+        Flow<DecodedFrame> mergedFrames = decoded1.join(
                 "merge-cameras",
                 decoded2,
                 (a, b) -> a.or(() -> b)
-                        .orElseThrow(() -> new IllegalStateException("union requires at least one input"))
+                        .orElseThrow(() -> new IllegalStateException("join requires at least one input"))
         );
 
         /*
@@ -118,12 +118,12 @@ public class Main {
         /*
          * 阶段 7：行人/车辆事件汇合为统一监控事件
          */
-        Flow<MonitorEvent> allEvents = personEvents.union(
+        Flow<MonitorEvent> allEvents = personEvents.join(
                 "merge-events",
                 vehicleEvents,
                 (p, v) -> p.map(Main::personToMonitorEvent)
                         .or(() -> v.map(Main::vehicleToMonitorEvent))
-                        .orElseThrow(() -> new IllegalStateException("union requires at least one input"))
+                        .orElseThrow(() -> new IllegalStateException("join requires at least one input"))
         );
 
         /*
