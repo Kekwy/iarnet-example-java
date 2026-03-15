@@ -1,0 +1,46 @@
+[
+  {
+    "frame": {
+      "structValue": {
+        "fields": [
+          { "name": "cameraId", "value": { "stringValue": "cam1" } },
+          { "name": "sequenceId", "value": { "int64Value": "3" } },
+          { "name": "rawBytes", "value": { "stringValue": "frame_003" } }
+        ]
+      }
+    }
+  },
+  {
+    "frame": {
+      "structValue": {
+        "fields": [
+          { "name": "cameraId", "value": { "stringValue": "cam1" } },
+          { "name": "sequenceId", "value": { "int64Value": "1" } },
+          { "name": "rawBytes", "value": { "stringValue": "frame_001" } }
+        ]
+      }
+    }
+  },
+  {
+    "frame": {
+      "structValue": {
+        "fields": [
+          { "name": "cameraId", "value": { "stringValue": "cam1" } },
+          { "name": "sequenceId", "value": { "int64Value": "0" } },
+          { "name": "rawBytes", "value": { "stringValue": "frame_000" } }
+        ]
+      }
+    }
+  },
+  {
+    "frame": {
+      "structValue": {
+        "fields": [
+          { "name": "cameraId", "value": { "stringValue": "cam2" } },
+          { "name": "sequenceId", "value": { "int64Value": "5" } },
+          { "name": "rawBytes", "value": { "stringValue": "frame_005" } }
+        ]
+      }
+    }
+  }
+]
