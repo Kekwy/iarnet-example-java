@@ -1,0 +1,20 @@
+{
+  "cam1-input": {
+    "structValue": {
+      "fields": [
+        { "name": "cameraId", "value": { "stringValue": "cam1" } },
+        { "name": "sequenceId", "value": { "int64Value": "1" } },
+        { "name": "rawBytes", "value": { "stringValue": "mock_frame_cam1_001" } }
+      ]
+    }
+  },
+  "cam2-input": {
+    "structValue": {
+      "fields": [
+        { "name": "cameraId", "value": { "stringValue": "cam2" } },
+        { "name": "sequenceId", "value": { "int64Value": "2" } },
+        { "name": "rawBytes", "value": { "stringValue": "mock_frame_cam2_002" } }
+      ]
+    }
+  }
+}
